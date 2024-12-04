@@ -1,36 +1,43 @@
-# syntax=docker/dockerfile:1
+# 使用官方 Node.js 長期支持版作為基礎鏡像
+FROM node:20-alpine3.18 AS base
 
-# --- builder ---
-FROM golang:1.22 as builder
+# 設置工作目錄
+WORKDIR /app
 
-RUN GO111MODULE=on
+# 設置非 root 用戶
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-RUN mkdir /app
+# 複製依賴文件
+COPY package*.json ./
 
-WORKDIR /app/insights-bot
+# 構建階段
+FROM base AS build
 
-COPY go.mod /app/insights-bot/go.mod
-COPY go.sum /app/insights-bot/go.sum
+# 安裝構建依賴
+RUN apk add --no-cache python3 make gcc g++
 
-RUN go env
-RUN go env -w CGO_ENABLED=0
-RUN go mod download
+# 安裝項目依賴
+RUN npm ci --only=production
 
-COPY . /app/insights-bot
+# 最終階段
+FROM base AS production
 
-RUN go build -a -o "release/insights-bot" "github.com/nekomeowww/insights-bot/cmd/insights-bot"
+# 複製編譯後的依賴
+COPY --from=build /app/node_modules ./node_modules
+COPY . .
 
-# --- runner ---
-FROM debian as runner
+# 修改文件權限
+RUN chown -R appuser:appgroup /app
 
-RUN apt update && apt upgrade -y && apt install -y ca-certificates curl && update-ca-certificates
+# 切換到非 root 用戶
+USER appuser
 
-COPY --from=builder /app/insights-bot/release/insights-bot /usr/local/bin/
-COPY --from=builder /app/insights-bot/locales /etc/insights-bot/locales
-
-ENV LOG_FILE_PATH /var/log/insights-bot/insights-bot.log
-ENV LOCALES_DIR /etc/insights-bot/locales
-
+# 暴露應用端口
 EXPOSE 7069
 
-CMD [ "/usr/local/bin/insights-bot" ]
+# 設置健康檢查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s \
+  CMD wget -q -O- http://localhost:3000/health || exit 1
+
+# 設置容器啟動命令
+CMD ["npm", "start"]
